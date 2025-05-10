@@ -51,7 +51,7 @@ class BasePane(QWebEngineView):
         # if not offTheRecord. For true persistence, we need to point it to a storage path.
         self.profile = QWebEngineProfile(profile_name, self) # Give it a name, parent it to self
         self.profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies)
-        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskCache)
+        self.profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
         self.profile.setPersistentStoragePath(profile_storage_path)
         
         # Create a QWebEnginePage with this profile
