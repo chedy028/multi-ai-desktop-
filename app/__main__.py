@@ -26,9 +26,6 @@ class MainWindow(QWidget):
         super().__init__()
         self.setWindowTitle("Multi-AI Desk")
 
-        self.prompt = PromptInput(placeholderText="Type once, hit Compare or press Enter…", maximumHeight=60)
-        self.go_btn = QPushButton("Compare")
-
         # GeminiPane and GrokPane are defined locally in this file
         self.panes = [ChatGPTPane(), GeminiPane(), GrokPane()]
         splitter   = QSplitter(Qt.Horizontal)
@@ -36,20 +33,9 @@ class MainWindow(QWidget):
 
         lay = QVBoxLayout(self)
         lay.addWidget(splitter, 1)
-        lay.addWidget(self.prompt)
-        lay.addWidget(self.go_btn)
-
-        # wiring
-        self.go_btn.clicked.connect(self.broadcast)
-        self.prompt.returnPressedSignal.connect(self.broadcast)
 
         for pane in self.panes:
             pane.answerReady.connect(lambda text, p=pane: self.display(p, text))
-
-    def broadcast(self):
-        txt = self.prompt.toPlainText().strip()
-        if not txt: return
-        for p in self.panes: p.send_prompt(txt)
 
     def display(self, pane, text):
         # Very simple: replace the prompt box with answer.  
