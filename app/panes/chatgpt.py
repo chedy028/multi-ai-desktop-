@@ -3,7 +3,7 @@ from app.panes.base_pane import BasePane
 class ChatGPTPane(BasePane):
     """Pane for interacting with ChatGPT using QWebEngineView."""
     URL = "https://chat.openai.com"
-    JS_INPUT = "#prompt-textarea"
+    JS_INPUT = "#prompt-textarea"  # Reverted for testing setExternalText
     JS_SEND_BUTTON = "button[data-testid='send-button']"
     JS_LAST_REPLY = "div[data-message-author-role='assistant'] .markdown"
 
