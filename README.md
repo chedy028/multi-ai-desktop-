@@ -61,6 +61,11 @@ Run the application from the project root directory:
 python -m app
 ```
 
+## Showcase
+
+Check out a video of the Multi-AI Desktop in action:
+[Watch Showcase Video](showcase.mp4)
+
 ## Configuration
 
 Currently, user login for each AI service (ChatGPT, Gemini, Grok) is handled manually within their respective web views after the application starts.
