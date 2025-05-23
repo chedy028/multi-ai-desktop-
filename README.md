@@ -64,7 +64,7 @@ python -m app
 ## Showcase
 
 Check out a video of the Multi-AI Desktop in action:
-[Watch Showcase Video](showcase.mp4)
+![Multi-AI Desktop Showcase](showcase.gif)
 
 ## Configuration
 
