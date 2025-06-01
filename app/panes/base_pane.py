@@ -6,7 +6,11 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
 from PySide6.QtWebChannel import QWebChannel
 from app.utils.ocr_utils import OCRFinder
-import logging
+from app.utils.logging_config import get_logger
+from app.utils.js_loader import js_loader
+from app.utils.error_recovery import retry_on_failure, NetworkError, JSBridgeError
+
+logger = get_logger(__name__)
 
 class JsBridge(QObject):
     """Bridge class to handle communication between JavaScript and Python."""
@@ -18,7 +22,7 @@ class JsBridge(QObject):
 
     @Slot(str)
     def onUserInput(self, text):
-        print(f"JsBridge.onUserInput called with text: {text}")  # Debug print
+        logger.debug(f"JsBridge.onUserInput called with text: {text}")
         self.textEnteredInWebView.emit(text, self.pane_identifier)
 
 class BasePane(QWidget):
@@ -44,11 +48,11 @@ class BasePane(QWidget):
             raise NotImplementedError("Subclasses must define a URL and it cannot be empty.")
 
         pane_name = self.__class__.__name__
-        print(f"DEBUG PY ({pane_name}): Initializing. Checking _qwebchannel_js_content. Is None? {BasePane._qwebchannel_js_content is None}")
+        logger.info(f"Initializing {pane_name} pane")
 
         # Load qwebchannel.js content if not already loaded (happens once across all instances)
         if BasePane._qwebchannel_js_content is None:
-            print(f"DEBUG PY ({pane_name}): _qwebchannel_js_content is None. Attempting to load.")
+            logger.debug(f"Loading qwebchannel.js content for {pane_name}")
             # Try the alternative resource path
             qfile_path = ":/qtwebchannel/qwebchannel.js"
             qfile = QFile(qfile_path)
@@ -57,17 +61,15 @@ class BasePane(QWidget):
                 BasePane._qwebchannel_js_content = stream.readAll()
                 qfile.close()
                 if BasePane._qwebchannel_js_content and BasePane._qwebchannel_js_content.strip() != "":
-                    print(f"DEBUG PY ({pane_name}): qwebchannel.js loaded successfully from qrc path '{qfile_path}'. Length: {len(BasePane._qwebchannel_js_content)}")
+                    logger.info(f"qwebchannel.js loaded successfully. Length: {len(BasePane._qwebchannel_js_content)}")
                 else:
-                    print(f"DEBUG PY ({pane_name}): qwebchannel.js loaded from qrc path '{qfile_path}' but is empty or whitespace.")
-                    BasePane._qwebchannel_js_content = "" # Ensure it's an empty string
+                    logger.warning(f"qwebchannel.js loaded but is empty")
+                    BasePane._qwebchannel_js_content = ""
             else:
-                print(f"DEBUG PY ({pane_name}): Error: Could not load qwebchannel.js from qrc path '{qfile_path}'. Error: {qfile.errorString()}")
-                BasePane._qwebchannel_js_content = "" # Ensure it's an empty string on failure
+                logger.error(f"Could not load qwebchannel.js from {qfile_path}: {qfile.errorString()}")
+                BasePane._qwebchannel_js_content = ""
         else:
-            print(f"DEBUG PY ({pane_name}): _qwebchannel_js_content already processed/loaded. Current content length: {len(BasePane._qwebchannel_js_content) if BasePane._qwebchannel_js_content is not None else 'None'}")
-
-        print(f"DEBUG PY ({pane_name}): Final _qwebchannel_js_content status before JS injection. Is String? {isinstance(BasePane._qwebchannel_js_content, str)}. Length: {len(BasePane._qwebchannel_js_content) if BasePane._qwebchannel_js_content else '0 or None'}")
+            logger.debug(f"qwebchannel.js already loaded. Length: {len(BasePane._qwebchannel_js_content) if BasePane._qwebchannel_js_content else 0}")
 
         # Initialize OCR finder
         self.ocr_finder = OCRFinder()
@@ -80,7 +82,37 @@ class BasePane(QWidget):
         self.web_view = QWebEngineView()
         self.layout.addWidget(self.web_view)
 
-        # Set up profile
+        # Set up profile with error handling
+        try:
+            self._setup_web_profile()
+        except Exception as e:
+            logger.error(f"Error setting up web profile for {pane_name}: {str(e)}", exc_info=True)
+            raise
+
+        # Setup QWebChannel
+        self.pane_identifier = self.__class__.__name__
+        self.bridge = JsBridge(self.pane_identifier)
+        self.channel = QWebChannel(self.page)
+        self.page.setWebChannel(self.channel)
+        self.channel.registerObject("pyBridge", self.bridge)
+
+        # Connect signals
+        self.bridge.textEnteredInWebView.connect(self._handle_text_from_webview)
+        self.web_view.loadFinished.connect(self._inject_input_listener_js)
+        
+        self._is_programmatic_update = False
+        self._last_programmatically_set_text = ""
+
+        # Load the URL with error handling
+        try:
+            logger.info(f"Loading URL for {pane_name}: {self.URL}")
+            self.web_view.load(QUrl(self.URL))
+        except Exception as e:
+            logger.error(f"Error loading URL {self.URL} for {pane_name}: {str(e)}", exc_info=True)
+            self.errorOccurred.emit(f"Failed to load URL: {str(e)}")
+
+    def _setup_web_profile(self):
+        """Set up the web engine profile with proper error handling."""
         pane_type_name = self.__class__.__name__
         if pane_type_name not in BasePane._profile_name_counters:
             BasePane._profile_name_counters[pane_type_name] = 0
@@ -102,226 +134,79 @@ class BasePane(QWidget):
         self.page = QWebEnginePage(self.profile, self)
         self.web_view.setPage(self.page)
         
-        # Setup QWebChannel
-        self.pane_identifier = self.__class__.__name__
-        self.bridge = JsBridge(self.pane_identifier)
-        self.channel = QWebChannel(self.page)
-        self.page.setWebChannel(self.channel)
-        self.channel.registerObject("pyBridge", self.bridge)
+        logger.debug(f"Web profile set up for {self.__class__.__name__} at {profile_storage_path}")
 
-        # Connect signals
-        self.bridge.textEnteredInWebView.connect(self._handle_text_from_webview)
-        self.web_view.loadFinished.connect(self._inject_input_listener_js)
-        
-        self._is_programmatic_update = False
-        self._last_programmatically_set_text = ""
-
-        # Load the URL
-        self.web_view.load(QUrl(self.URL))
-
+    @retry_on_failure(max_retries=2, delay=1.0, exceptions=(JSBridgeError,))
     @Slot(bool)
     def _inject_input_listener_js(self, ok): # Slot for loadFinished signal
         if not ok:
-            logging.error(f"PY ({self.__class__.__name__}): Page load failed.")
+            logger.error(f"Page load failed for {self.__class__.__name__}")
+            self.errorOccurred.emit("Page load failed")
             return
 
         if BasePane._qwebchannel_js_content is None:
-            logging.error(f"PY ({self.__class__.__name__}): qwebchannel.js content is not loaded. Cannot inject JS.")
-            return
+            logger.error(f"qwebchannel.js content is not loaded. Cannot inject JS for {self.__class__.__name__}")
+            raise JSBridgeError("qwebchannel.js content not available")
 
         js_input_selector = getattr(self.__class__, 'JS_INPUT', None)
         if not js_input_selector:
-            logging.debug(f"PY ({self.__class__.__name__}): No JS_INPUT selector defined. Skipping input listener injection.")
+            logger.debug(f"No JS_INPUT selector defined for {self.__class__.__name__}. Skipping input listener injection.")
             return
 
-        # Escape the selector for safe inclusion in the JS string template
-        # and then json.dumps for direct use as a JS string literal in querySelector
-        js_input_selector_escaped_for_script = json.dumps(js_input_selector)
+        logger.debug(f"Injecting input listener JS for {self.__class__.__name__} with selector: {js_input_selector}")
 
-        # Debugging instance vs class attribute for JS_INPUT
-        instance_js_input = self.__dict__.get('JS_INPUT', 'Not in instance __dict__')
-        logging.debug(f"DEBUG PY ({self.__class__.__name__} instance in _inject_input_listener_js): Instance id={id(self)}, Class object id={id(self.__class__)}")
-        logging.debug(f"DEBUG PY ({self.__class__.__name__} instance in _inject_input_listener_js): JS_INPUT (from self.__class__.JS_INPUT)='{self.__class__.JS_INPUT}'")
-        logging.debug(f"DEBUG PY ({self.__class__.__name__} instance in _inject_input_listener_js): self.JS_INPUT (from instance dict if present)='{instance_js_input}'")
+        try:
+            # Use the new JavaScript loader
+            script = js_loader.get_input_listener_js(self.__class__.__name__, js_input_selector)
+            if not script:
+                raise JSBridgeError("Failed to load input listener JavaScript")
+            
+            # Inject qwebchannel.js first, then our script
+            self.page.runJavaScript(BasePane._qwebchannel_js_content)
+            self.page.runJavaScript(script)
+            
+            logger.info(f"Successfully injected input listener JS for {self.__class__.__name__}")
+        except Exception as e:
+            logger.error(f"Error injecting JavaScript for {self.__class__.__name__}: {str(e)}", exc_info=True)
+            raise JSBridgeError(f"JavaScript injection failed: {str(e)}")
 
-        logging.debug(f"PY ({self.__class__.__name__}): Preparing to inject JS. self.JS_INPUT = '{js_input_selector}'")
-
-        script = f"""
-            (function() {{ 
-                var bridgeInitialized = false;
-                var attachAttempts = 0;
-                const maxAttachAttempts = 15; // Increased attempts
-                const attachInterval = 300; // Slightly increased interval
-
-                function tryAttachListener() {{
-                    attachAttempts++;
-                    var currentSelector = {js_input_selector_escaped_for_script};
-                    // console.log(`JS ({self.__class__.__name__}): Attempting to find input element (Attempt ${{attachAttempts}}/${{maxAttachAttempts}}). Selector: ` + currentSelector);
-                    var inputElement = document.querySelector(currentSelector);
-
-                    if (inputElement) {{
-                        console.log(`JS ({self.__class__.__name__}): Input listener attached to element:`, inputElement, `using selector: ` + currentSelector);
-                        inputElement.addEventListener('input', function(event) {{
-                            if (inputElement._isProgrammaticUpdate) {{ // Check for the flag
-                                // console.log(`JS ({self.__class__.__name__}): Ignoring programmatic input event on`, inputElement);
-                                return; 
-                            }}
-                            if (window.pyBridge && window.pyBridge.onUserInput) {{
-                                let text = '';
-                                if (inputElement.tagName === 'TEXTAREA' || (inputElement.tagName === 'INPUT' && (inputElement.type === 'text' || inputElement.type === 'search'))) {{
-                                    text = inputElement.value;
-                                }} else if (inputElement.hasAttribute('contenteditable')) {{
-                                    text = inputElement.innerText;
-                                }}
-                                window.pyBridge.onUserInput(text);
-                            }} else {{
-                                console.warn('JS ({self.__class__.__name__}): pyBridge or onUserInput not available when input event fired.');
-                            }}
-                        }});
-                        // Add focus/blur for diagnostics if needed in future
-                        // inputElement.addEventListener('focus', function() {{ console.log(`JS ({self.__class__.__name__}): Element focused: ` + currentSelector); }});
-                        // inputElement.addEventListener('blur', function() {{ console.log(`JS ({self.__class__.__name__}): Element blurred: ` + currentSelector); }});
-                    }} else {{
-                        if (attachAttempts < maxAttachAttempts) {{
-                            // console.warn(`JS ({self.__class__.__name__}): Could not find input element (Attempt ${{attachAttempts}}/${{maxAttachAttempts}}). Retrying in ${{attachInterval}}ms. Selector: ` + currentSelector);
-                            setTimeout(tryAttachListener, attachInterval);
-                        }} else {{
-                            console.error(`JS ({self.__class__.__name__}): Failed to find input element after ${{maxAttachAttempts}} attempts. Selector: ` + currentSelector);
-                        }}
-                    }}
-                }}
-
-                function initWebChannelAndListeners() {{
-                    if (typeof QWebChannel === 'undefined' || typeof QWebChannel.constructor !== 'function') {{
-                        console.error('JS ({self.__class__.__name__}): QWebChannel is not defined. Cannot establish pyBridge. Input listener WILL NOT WORK.');
-                        return; // Stop if QWebChannel is missing
-                    }}
-                    try {{
-                        new QWebChannel(qt.webChannelTransport, function(channel) {{
-                            window.pyBridge = channel.objects.pyBridge;
-                            bridgeInitialized = true;
-                            console.log('JS ({self.__class__.__name__}): pyBridge initialized successfully via QWebChannel.');
-                            tryAttachListener(); // Now attempt to attach the input listener
-                        }});
-                    }} catch (e) {{
-                        console.error('JS ({self.__class__.__name__}): Error initializing QWebChannel:', e, '. Input listener WILL NOT WORK.');
-                        // If QWebChannel fails, pyBridge won't be set up, so listeners depending on it are moot.
-                    }}
-                }}
-                
-                // Check if pyBridge is already available (e.g. from a previous injection or persistent context)
-                if (window.pyBridge && window.pyBridge.onUserInput) {{
-                    console.log('JS ({self.__class__.__name__}): pyBridge already available. Proceeding to attach listener.');
-                    bridgeInitialized = true;
-                    tryAttachListener();
-                }} else if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
-                    // console.log('JS ({self.__class__.__name__}): qt.webChannelTransport available. Attempting to initialize QWebChannel.');
-                    initWebChannelAndListeners();
-                }} else {{
-                    // Fallback: try to set up listeners after a delay, hoping transport becomes available
-                    // This is less reliable and indicates a potential issue with QWebChannel setup timing.
-                    console.warn('JS ({self.__class__.__name__}): qt.webChannelTransport not immediately available. Will retry QWebChannel init and listener attachment. This might indicate a setup issue.');
-                    let channelInitAttempts = 0;
-                    const maxChannelInitAttempts = 5;
-                    const channelInitInterval = 500; // ms
-                    function retryInitWebChannel() {{
-                        if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
-                            initWebChannelAndListeners();
-                        }} else {{
-                            channelInitAttempts++;
-                            if (channelInitAttempts < maxChannelInitAttempts) {{
-                                // console.warn(`JS ({self.__class__.__name__}): Retrying QWebChannel init (Attempt ${{channelInitAttempts}}/${{maxChannelInitAttempts}})...`);
-                                setTimeout(retryInitWebChannel, channelInitInterval);
-                            }} else {{
-                                console.error('JS ({self.__class__.__name__}): Failed to initialize QWebChannel after multiple attempts. qt.webChannelTransport not found.');
-                            }}
-                        }}
-                    }}
-                    retryInitWebChannel();
-                }}
-            }})();
-        """
-        self.page.runJavaScript(BasePane._qwebchannel_js_content) # Ensure qwebchannel.js is loaded first
-        self.page.runJavaScript(script) # Then run our script that uses it
-
+    @retry_on_failure(max_retries=2, delay=0.5, exceptions=(Exception,))
     def setExternalText(self, text: str, selector: str = None):
         # Determine the correct selector
         js_selector = selector if selector else getattr(self.__class__, 'JS_INPUT', None)
         if not js_selector:
-            logging.warning(f"PY ({self.__class__.__name__}): No JS_INPUT selector defined for setExternalText.")
+            logger.warning(f"No JS_INPUT selector defined for setExternalText in {self.__class__.__name__}")
             return
 
-        js_selector_escaped = json.dumps(js_selector)
-        js_text_escaped = json.dumps(text)
+        logger.debug(f"Setting external text for {self.__class__.__name__}: {len(text)} characters")
 
-        script = f"""
-            (function() {{
-                var currentSelector = {js_selector_escaped};
-                var inputElement = document.querySelector(currentSelector);
-                if (inputElement) {{
-                    // console.log(`JS (setExternalText in {self.__class__.__name__}): Found element:`, inputElement, `for selector: ` + currentSelector + `. Setting text to: {js_text_escaped}`);
-                    
-                    inputElement._isProgrammaticUpdate = true; // Set flag before changing value
-
-                    var scrollTop = inputElement.scrollTop; // Store scroll position
-
-                    if (inputElement.tagName === 'TEXTAREA' || (inputElement.tagName === 'INPUT' && (inputElement.type === 'text' || inputElement.type === 'search'))) {{
-                        // console.log(`JS (setExternalText in {self.__class__.__name__}): Handling as TEXTAREA/INPUT for selector: ` + currentSelector);
-                        inputElement.focus(); // Focus before setting value
-                        inputElement.value = {js_text_escaped};
-                        var inputEvent = new Event('input', {{ bubbles: true, cancelable: true }});
-                        inputElement.dispatchEvent(inputEvent);
-                        var changeEvent = new Event('change', {{ bubbles: true, cancelable: true }});
-                        inputElement.dispatchEvent(changeEvent);
-                        // Attempt to dispatch keydown/keyup for Space to further nudge UI
-                        var kdEvent = new KeyboardEvent('keydown', {{ 'key': ' ', 'code': 'Space', 'keyCode': 32, 'which': 32, 'bubbles': true, 'cancelable': true }});
-                        inputElement.dispatchEvent(kdEvent);
-                        var kuEvent = new KeyboardEvent('keyup', {{ 'key': ' ', 'code': 'Space', 'keyCode': 32, 'which': 32, 'bubbles': true, 'cancelable': true }});
-                        inputElement.dispatchEvent(kuEvent);
-                        // inputElement.blur(); // Keep commented out for now
-                    }} else if (inputElement.isContentEditable) {{
-                        // console.log(`JS (setExternalText in {self.__class__.__name__}): Handling as contenteditable for selector: ` + currentSelector);
-                        inputElement.focus(); // Also ensure focus for contenteditable
-                        inputElement.innerText = {js_text_escaped};
-                        var inputEvent = new Event('input', {{ bubbles: true, cancelable: true }});
-                        inputElement.dispatchEvent(inputEvent);
-                        // Also try keydown/keyup for contenteditable
-                        var kdEvent = new KeyboardEvent('keydown', {{ 'key': ' ', 'code': 'Space', 'keyCode': 32, 'which': 32, 'bubbles': true, 'cancelable': true }});
-                        inputElement.dispatchEvent(kdEvent);
-                        var kuEvent = new KeyboardEvent('keyup', {{ 'key': ' ', 'code': 'Space', 'keyCode': 32, 'which': 32, 'bubbles': true, 'cancelable': true }});
-                        inputElement.dispatchEvent(kuEvent);
-                    }} else {{
-                        // Fallback for other types, though less common for our inputs
-                        // console.log(`JS (setExternalText in {self.__class__.__name__}): Handling as other (e.g. div, span) for selector: ` + currentSelector);
-                        inputElement.textContent = {js_text_escaped};
-                    }}
-                    
-                    inputElement.scrollTop = scrollTop; // Restore scroll position
-
-                    delete inputElement._isProgrammaticUpdate; // Clear flag after dispatching
-
-                }} else {{
-                    console.warn(`JS (setExternalText in {self.__class__.__name__}): Could not find input element with selector: ${{currentSelector}}`);
-                }}
-            }})();
-        """
-        if self.page:
-            self.page.runJavaScript(script)
-        else:
-            logging.error(f"PY ({self.__class__.__name__}): Page not available for JS execution in setExternalText.")
+        try:
+            # Use the new JavaScript loader
+            script = js_loader.get_set_external_text_js(self.__class__.__name__, js_selector, text)
+            if not script:
+                logger.error(f"Failed to load setExternalText JavaScript for {self.__class__.__name__}")
+                return
+            
+            if self.page:
+                self.page.runJavaScript(script)
+                logger.debug(f"Successfully set external text for {self.__class__.__name__}")
+            else:
+                logger.error(f"Page not available for JS execution in setExternalText for {self.__class__.__name__}")
+        except Exception as e:
+            logger.error(f"Error setting external text for {self.__class__.__name__}: {str(e)}", exc_info=True)
 
     def _handle_text_from_webview(self, text: str):
-        print(f"BasePane._handle_text_from_webview called with text: {text}")  # Debug print
+        logger.debug(f"BasePane._handle_text_from_webview called for {self.__class__.__name__} with text: {len(text)} characters")
         if self._is_programmatic_update and text == self._last_programmatically_set_text:
-            print("Ignoring programmatic update")  # Debug print
+            logger.debug(f"Ignoring programmatic update for {self.__class__.__name__}")
             return
-        print(f"Emitting userInputDetectedInPane with text: {text}")  # Debug print
+        logger.debug(f"Emitting userInputDetectedInPane for {self.__class__.__name__}")
         self.userInputDetectedInPane.emit(text, self)
 
     def ensure_input_focused(self):
         """Focus the input box using JavaScript to make the placeholder visible for OCR."""
         if not self.JS_INPUT:
-            print(f"{self.__class__.__name__} Error: JS_INPUT selector not defined for ensure_input_focused.")
+            logger.error(f"JS_INPUT selector not defined for ensure_input_focused in {self.__class__.__name__}")
             return
         js = f'''
         (function() {{
@@ -329,8 +214,11 @@ class BasePane(QWidget):
             if (inp) {{ inp.focus(); }}
         }})();
         '''
-        self.page.runJavaScript(js)
-        print("[DEBUG] Ran JS to focus input box.")
+        try:
+            self.page.runJavaScript(js)
+            logger.debug(f"Focused input box for {self.__class__.__name__}")
+        except Exception as e:
+            logger.error(f"Error focusing input box for {self.__class__.__name__}: {str(e)}")
 
     def find_and_click_input(self, target_text: str = "Ask anything") -> bool:
         """
@@ -342,8 +230,14 @@ class BasePane(QWidget):
         Returns:
             True if successful, False otherwise
         """
-        self.ensure_input_focused()
-        return self.ocr_finder.click_input_box(self, target_text)
+        try:
+            self.ensure_input_focused()
+            result = self.ocr_finder.click_input_box(self, target_text)
+            logger.debug(f"OCR input click for {self.__class__.__name__}: {'success' if result else 'failed'}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in find_and_click_input for {self.__class__.__name__}: {str(e)}", exc_info=True)
+            return False
 
     def find_input_location(self, target_text: str = "Ask anything"):
         """
@@ -355,24 +249,36 @@ class BasePane(QWidget):
         Returns:
             Tuple of (x, y, width, height) if found, None otherwise
         """
-        self.ensure_input_focused()
-        return self.ocr_finder.find_input_box(self, target_text)
+        try:
+            self.ensure_input_focused()
+            result = self.ocr_finder.find_input_box(self, target_text)
+            logger.debug(f"OCR input location for {self.__class__.__name__}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in find_input_location for {self.__class__.__name__}: {str(e)}", exc_info=True)
+            return None
 
     def __del__(self):
         """Clean up resources when the pane is destroyed."""
         try:
+            logger.debug(f"Cleaning up resources for {self.__class__.__name__}")
             # Disconnect signals
-            self.web_view.loadFinished.disconnect()
-            self.bridge.textEnteredInWebView.disconnect()
+            if hasattr(self, 'web_view') and self.web_view:
+                self.web_view.loadFinished.disconnect()
+            if hasattr(self, 'bridge') and self.bridge:
+                self.bridge.textEnteredInWebView.disconnect()
             
             # Clear page
-            self.web_view.setPage(None)
-            self.page.deleteLater()
+            if hasattr(self, 'web_view') and self.web_view:
+                self.web_view.setPage(None)
+            if hasattr(self, 'page') and self.page:
+                self.page.deleteLater()
             
             # Remove profile reference
             if hasattr(self, 'profile'):
                 profile_name = self.profile.name()
                 if profile_name in BasePane._profile_name_counters:
                     del BasePane._profile_name_counters[profile_name]
-        except:
+        except Exception as e:
+            logger.error(f"Error during cleanup for {self.__class__.__name__}: {str(e)}")
             pass
