@@ -9,6 +9,7 @@ from app.utils.ocr_utils import OCRFinder
 from app.utils.logging_config import get_logger
 from app.utils.js_loader import js_loader
 from app.utils.error_recovery import retry_on_failure, NetworkError, JSBridgeError
+from typing import List, Optional, Tuple
 
 logger = get_logger(__name__)
 
@@ -220,43 +221,98 @@ class BasePane(QWidget):
         except Exception as e:
             logger.error(f"Error focusing input box for {self.__class__.__name__}: {str(e)}")
 
-    def find_and_click_input(self, target_text: str = "Ask anything") -> bool:
+    def find_and_click_input(self, target_texts: List[str] = None) -> bool:
         """
         Find and click the input box using OCR.
         
         Args:
-            target_text: The text to look for (default: "Ask anything")
+            target_texts: List of texts to look for (default: common input placeholders)
             
         Returns:
             True if successful, False otherwise
         """
         try:
+            # Ensure input is focused first
             self.ensure_input_focused()
-            result = self.ocr_finder.click_input_box(self, target_text)
-            logger.debug(f"OCR input click for {self.__class__.__name__}: {'success' if result else 'failed'}")
+            
+            # Use default target texts if none provided
+            if target_texts is None:
+                target_texts = [
+                    "Ask anything", "Message", "Type a message", "Enter your message",
+                    "What can I help", "How can I help", "Ask me anything",
+                    "Type here", "Enter text", "Search", "Chat"
+                ]
+            
+            logger.info(f"Attempting OCR input click for {self.__class__.__name__} with texts: {target_texts}")
+            result = self.ocr_finder.click_input_box(self, target_texts)
+            
+            if result:
+                logger.info(f"OCR input click successful for {self.__class__.__name__}")
+            else:
+                logger.warning(f"OCR input click failed for {self.__class__.__name__}")
+                
             return result
         except Exception as e:
             logger.error(f"Error in find_and_click_input for {self.__class__.__name__}: {str(e)}", exc_info=True)
             return False
 
-    def find_input_location(self, target_text: str = "Ask anything"):
+    def find_input_location(self, target_texts: List[str] = None) -> Optional[Tuple[int, int, int, int]]:
         """
         Find the location of the input box using OCR.
         
         Args:
-            target_text: The text to look for (default: "Ask anything")
+            target_texts: List of texts to look for (default: common input placeholders)
             
         Returns:
             Tuple of (x, y, width, height) if found, None otherwise
         """
         try:
+            # Ensure input is focused first
             self.ensure_input_focused()
-            result = self.ocr_finder.find_input_box(self, target_text)
-            logger.debug(f"OCR input location for {self.__class__.__name__}: {result}")
+            
+            # Use default target texts if none provided
+            if target_texts is None:
+                target_texts = [
+                    "Ask anything", "Message", "Type a message", "Enter your message",
+                    "What can I help", "How can I help", "Ask me anything",
+                    "Type here", "Enter text", "Search", "Chat"
+                ]
+            
+            logger.info(f"Attempting OCR input location for {self.__class__.__name__} with texts: {target_texts}")
+            result = self.ocr_finder.find_input_box(self, target_texts)
+            
+            if result:
+                logger.info(f"OCR input location found for {self.__class__.__name__}: {result}")
+            else:
+                logger.warning(f"OCR input location not found for {self.__class__.__name__}")
+                
             return result
         except Exception as e:
             logger.error(f"Error in find_input_location for {self.__class__.__name__}: {str(e)}", exc_info=True)
             return None
+
+    def test_ocr_system(self) -> bool:
+        """
+        Test the OCR system for this pane.
+        
+        Returns:
+            True if OCR is working, False otherwise
+        """
+        try:
+            if not self.ocr_finder.is_available():
+                logger.error(f"OCR system not available for {self.__class__.__name__}")
+                return False
+                
+            # Test basic OCR functionality
+            if not self.ocr_finder.test_ocr():
+                logger.error(f"OCR test failed for {self.__class__.__name__}")
+                return False
+                
+            logger.info(f"OCR system test passed for {self.__class__.__name__}")
+            return True
+        except Exception as e:
+            logger.error(f"Error testing OCR system for {self.__class__.__name__}: {str(e)}", exc_info=True)
+            return False
 
     def __del__(self):
         """Clean up resources when the pane is destroyed."""
