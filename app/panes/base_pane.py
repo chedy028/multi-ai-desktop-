@@ -238,9 +238,9 @@ class BasePane(QWidget):
             # Use default target texts if none provided
             if target_texts is None:
                 target_texts = [
-                    "Ask anything", "Message", "Type a message", "Enter your message",
+                    "Ask anything", "what do you want to know", "Message", "Type a message", "Enter your message",
                     "What can I help", "How can I help", "Ask me anything",
-                    "Type here", "Enter text", "Search", "Chat"
+                    "Type here", "Enter text", "Search", "Chat", "Send a message", "Start typing"
                 ]
             
             logger.info(f"Attempting OCR input click for {self.__class__.__name__} with texts: {target_texts}")
@@ -273,9 +273,9 @@ class BasePane(QWidget):
             # Use default target texts if none provided
             if target_texts is None:
                 target_texts = [
-                    "Ask anything", "Message", "Type a message", "Enter your message",
+                    "Ask anything", "what do you want to know", "Message", "Type a message", "Enter your message",
                     "What can I help", "How can I help", "Ask me anything",
-                    "Type here", "Enter text", "Search", "Chat"
+                    "Type here", "Enter text", "Search", "Chat", "Send a message", "Start typing"
                 ]
             
             logger.info(f"Attempting OCR input location for {self.__class__.__name__} with texts: {target_texts}")

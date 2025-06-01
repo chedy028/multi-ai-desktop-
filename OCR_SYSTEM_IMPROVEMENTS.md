@@ -159,9 +159,9 @@ def _text_matches(self, detected_text: str, target_text: str, confidence: int) -
 ### Default Target Texts
 ```python
 default_texts = [
-    "Ask anything", "Message", "Type a message", "Enter your message",
+    "Ask anything", "what do you want to know", "Message", "Type a message", "Enter your message",
     "What can I help", "How can I help", "Ask me anything",
-    "Type here", "Enter text", "Search", "Chat"
+    "Type here", "Enter text", "Search", "Chat", "Send a message", "Start typing"
 ]
 ```
 

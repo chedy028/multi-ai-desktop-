@@ -31,9 +31,9 @@ class OCRWorkerThread(QThread):
         try:
             self.ocrProgress.emit("Capturing widget screenshot...")
             
-            # Test OCR first
-            if not self.ocr_finder.test_ocr():
-                self.ocrCompleted.emit(False, "OCR test failed. Please check Tesseract installation.")
+            # Skip the test during actual OCR operations - just check if Tesseract is available
+            if not self.ocr_finder.is_available():
+                self.ocrCompleted.emit(False, "OCR system not available. Please check Tesseract installation.")
                 return
             
             self.ocrProgress.emit("Searching for input box...")
@@ -119,6 +119,7 @@ class OCRControlWidget(QWidget):
         self.text_combo.setEditable(True)
         self.text_combo.addItems([
             "Ask anything",
+            "what do you want to know",  # Grok pattern
             "Message",
             "Type a message", 
             "Enter your message",
@@ -128,7 +129,10 @@ class OCRControlWidget(QWidget):
             "Type here",
             "Enter text",
             "Search",
-            "Chat"
+            "Chat",
+            "Send a message",
+            "Start typing",
+            "Write something"
         ])
         text_layout.addWidget(self.text_combo)
         control_layout.addLayout(text_layout)
@@ -240,9 +244,9 @@ class OCRControlWidget(QWidget):
         if self.auto_mode_checkbox.isChecked():
             # Add common variations
             default_texts = [
-                "Ask anything", "Message", "Type a message", "Enter your message",
+                "Ask anything", "what do you want to know", "Message", "Type a message", "Enter your message",
                 "What can I help", "How can I help", "Ask me anything",
-                "Type here", "Enter text", "Search", "Chat"
+                "Type here", "Enter text", "Search", "Chat", "Send a message", "Start typing"
             ]
             for text in default_texts:
                 if text not in target_texts:
