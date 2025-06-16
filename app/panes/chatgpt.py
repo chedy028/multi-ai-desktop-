@@ -8,5 +8,5 @@ class ChatGPTPane(BasePane):
     JS_LAST_REPLY = "div[data-message-author-role='assistant'] .markdown"
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         # All functionality is inherited from BasePane 

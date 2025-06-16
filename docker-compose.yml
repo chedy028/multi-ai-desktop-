@@ -1,0 +1,14 @@
+services:
+  multi-ai-desktop:
+    build: .
+    ports:
+      - "6081:6080"  # noVNC web interface
+      - "5900:5900"  # VNC direct access (optional)
+    environment:
+      - DISPLAY=:0
+      - QT_QPA_PLATFORM=xcb
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    restart: unless-stopped
+    container_name: multi-ai-desktop 

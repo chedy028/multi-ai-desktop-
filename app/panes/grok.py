@@ -1,17 +1,22 @@
 from app.panes.base_pane import BasePane
 from PySide6.QtCore import QTimer, QRect
-from PySide6.QtGui import QPixmap
-import pytesseract
-from PIL import Image
+from app.utils.logging_config import get_logger
 import io
+try:
+    from PIL import Image
+    import pytesseract
+except ImportError:
+    # Optional computer vision dependencies
+    Image = None
+    pytesseract = None
+
+logger = get_logger(__name__)
 
 class GrokPane(BasePane):
-    """Pane for interacting with xAI's Grok using QWebEngineView with computer vision fallback."""
+    """Pane for interacting with xAI's Grok using QWebEngineView."""
     
     URL = "https://grok.x.ai"
-    # Simplified but comprehensive selectors focusing on logged-in Grok interface
     JS_INPUT_SELECTORS = [
-        # Most likely selectors for logged-in Grok (based on modern chat interfaces)
         'textarea[placeholder*="Ask"]',
         'textarea[placeholder*="Message"]',
         'textarea[placeholder*="Type"]',
@@ -20,7 +25,6 @@ class GrokPane(BasePane):
         'div[contenteditable="true"][placeholder*="Message"]',
         'div[contenteditable="true"][placeholder*="Type"]',
         'div[contenteditable="true"][placeholder*="What"]',
-        # Data-testid patterns
         'textarea[data-testid*="input"]',
         'textarea[data-testid*="prompt"]',
         'textarea[data-testid*="message"]',
@@ -29,242 +33,40 @@ class GrokPane(BasePane):
         'div[contenteditable="true"][data-testid*="prompt"]',
         'div[contenteditable="true"][data-testid*="message"]',
         'div[contenteditable="true"][data-testid*="composer"]',
-        # Form-based (most common pattern)
         'form textarea',
         'form div[contenteditable="true"]',
         'form input[type="text"]',
-        # Generic but visible elements
         'textarea:not([style*="display: none"]):not([style*="visibility: hidden"])',
         'div[contenteditable="true"]:not([style*="display: none"]):not([style*="visibility: hidden"])',
         'input[type="text"]:not([style*="display: none"]):not([style*="visibility: hidden"])',
-        # Very generic fallbacks
         'textarea',
         'div[contenteditable="true"]',
         '[contenteditable="true"]',
         'input[type="text"]'
     ]
-    
-    # Use the first selector as default for compatibility
     JS_INPUT = JS_INPUT_SELECTORS[0]
     JS_SEND_BUTTON = "button[type='submit'], button[aria-label*='Send'], button[data-testid*='send']"
     JS_LAST_REPLY = "div.message-content, div[data-testid*='message'], div[data-testid*='response']"
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         
-        # Computer vision fallback system
+        # Initialize computer vision properties
         self.cv_enabled = False
+        self.js_detection_failed = False
+        self.last_ocr_text = ""
+        self.cv_check_interval = 1000  # 1 second
+        self.input_area_rect = None
+        
+        # Initialize computer vision timer
+        from PySide6.QtCore import QTimer
         self.cv_timer = QTimer()
         self.cv_timer.timeout.connect(self._check_input_with_cv)
-        self.last_ocr_text = ""
-        self.js_detection_failed = False
-        self.cv_check_interval = 1000  # Check every 1 second
-        self.input_area_rect = None  # Will be set based on page layout
         
-        # Add callback for JS detection status to the existing bridge
+        # Set custom JS detection callback on the existing bridge
         self.bridge.onJSDetectionStatus = self._on_js_detection_status
         
-        print(f"PY (GrokPane): Initialized with computer vision fallback support")
-
-    def _inject_input_listener_js(self, ok):
-        """Override with immediate DOM inspection and computer vision fallback."""
-        if not ok:
-            print(f"PY ({self.__class__.__name__}): Page load failed.")
-            return
-
-        if BasePane._qwebchannel_js_content is None:
-            print(f"PY ({self.__class__.__name__}): qwebchannel.js content is not loaded. Cannot inject JS.")
-            return
-
-        # Create JavaScript with immediate DOM inspection and simplified logic
-        selectors_js = str(self.JS_INPUT_SELECTORS)
-        
-        script = f"""
-            (function() {{ 
-                var bridgeInitialized = false;
-                var isListenerAttached = false;
-                var workingSelector = null;
-                var jsDetectionFailed = false;
-                const selectors = {selectors_js};
-
-                function logDOMState() {{
-                    console.log('=== GROK DOM INSPECTION ===');
-                    console.log(`URL: ${{window.location.href}}`);
-                    console.log(`Title: "${{document.title}}"`);
-                    
-                    // Find ALL input-like elements
-                    var allInputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
-                    console.log(`Total input elements found: ${{allInputs.length}}`);
-                    
-                    allInputs.forEach((el, idx) => {{
-                        var rect = el.getBoundingClientRect();
-                        var isVisible = rect.width > 0 && rect.height > 0 && 
-                                       window.getComputedStyle(el).display !== 'none' &&
-                                       window.getComputedStyle(el).visibility !== 'hidden';
-                        
-                        console.log(`[${{idx}}] ${{el.tagName}} - Visible: ${{isVisible}}`);
-                        console.log(`    Placeholder: "${{el.placeholder || ''}}"`);
-                        console.log(`    DataTestId: "${{el.getAttribute('data-testid') || ''}}"`);
-                        console.log(`    Classes: "${{el.className || ''}}"`);
-                        console.log(`    ID: "${{el.id || ''}}"`);
-                        console.log(`    ContentEditable: ${{el.contentEditable}}`);
-                        console.log(`    Size: ${{rect.width}}x${{rect.height}} at (${{rect.x}}, ${{rect.y}})`);
-                        
-                        if (el.parentElement) {{
-                            console.log(`    Parent: ${{el.parentElement.tagName}} - "${{el.parentElement.className || ''}}"`);
-                        }}
-                        console.log('    ---');
-                    }});
-                    
-                    // Check forms
-                    var forms = document.querySelectorAll('form');
-                    console.log(`Forms found: ${{forms.length}}`);
-                    forms.forEach((form, idx) => {{
-                        var formInputs = form.querySelectorAll('input, textarea, [contenteditable="true"]');
-                        console.log(`Form ${{idx}}: ${{formInputs.length}} inputs`);
-                    }});
-                    
-                    console.log('=== END INSPECTION ===');
-                }}
-
-                function findAndAttachToInput() {{
-                    if (isListenerAttached) {{
-                        console.log('JS (Grok): Already attached, skipping');
-                        return true;
-                    }}
-                    
-                    console.log('JS (Grok): Starting input search...');
-                    logDOMState();
-                    
-                    // Try each selector
-                    for (let i = 0; i < selectors.length; i++) {{
-                        var selector = selectors[i];
-                        console.log(`JS (Grok): Testing selector ${{i+1}}/${{selectors.length}}: ${{selector}}`);
-                        
-                        try {{
-                            var elements = document.querySelectorAll(selector);
-                            console.log(`JS (Grok): Found ${{elements.length}} elements with this selector`);
-                            
-                            for (let j = 0; j < elements.length; j++) {{
-                                var el = elements[j];
-                                var rect = el.getBoundingClientRect();
-                                var isVisible = rect.width > 0 && rect.height > 0 && 
-                                               window.getComputedStyle(el).display !== 'none' &&
-                                               window.getComputedStyle(el).visibility !== 'hidden';
-                                
-                                console.log(`JS (Grok): Element ${{j}}: Visible=${{isVisible}}, Size=${{rect.width}}x${{rect.height}}`);
-                                
-                                if (isVisible) {{
-                                    console.log(`JS (Grok): SUCCESS! Attaching to visible element with selector: ${{selector}}`);
-                                    console.log(`JS (Grok): Element details:`, el);
-                                    
-                                    // Attach event listeners
-                                    ['input', 'keyup', 'paste', 'change'].forEach(eventType => {{
-                                        el.addEventListener(eventType, function(event) {{
-                                            if (el._isProgrammaticUpdate) {{
-                                                return; 
-                                            }}
-                                            if (window.pyBridge && window.pyBridge.onUserInput) {{
-                                                let text = '';
-                                                if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text')) {{
-                                                    text = el.value;
-                                                }} else if (el.contentEditable === 'true') {{
-                                                    text = el.innerText || el.textContent || '';
-                                                }}
-                                                console.log(`JS (Grok): User input detected via ${{eventType}}: "${{text}}"`);
-                                                window.pyBridge.onUserInput(text);
-                                            }}
-                                        }});
-                                    }});
-                                    
-                                    workingSelector = selector;
-                                    window.grokWorkingSelector = selector;
-                                    isListenerAttached = true;
-                                    console.log(`JS (Grok): Listener attached successfully!`);
-                                    
-                                    // Notify Python that JS detection succeeded
-                                    if (window.pyBridge && window.pyBridge.onJSDetectionStatus) {{
-                                        window.pyBridge.onJSDetectionStatus(true);
-                                    }}
-                                    
-                                    return true;
-                                }}
-                            }}
-                        }} catch (e) {{
-                            console.log(`JS (Grok): Error with selector ${{selector}}:`, e);
-                        }}
-                    }}
-                    
-                    console.log('JS (Grok): No suitable input element found - JS detection failed');
-                    jsDetectionFailed = true;
-                    
-                    // Notify Python that JS detection failed, enable computer vision
-                    if (window.pyBridge && window.pyBridge.onJSDetectionStatus) {{
-                        window.pyBridge.onJSDetectionStatus(false);
-                    }}
-                    
-                    return false;
-                }}
-
-                function retryAttachment() {{
-                    console.log('JS (Grok): Retrying input attachment...');
-                    if (!findAndAttachToInput()) {{
-                        setTimeout(retryAttachment, 3000); // Longer retry interval
-                    }}
-                }}
-
-                function initWebChannelAndStart() {{
-                    if (typeof QWebChannel === 'undefined') {{
-                        console.error('JS (Grok): QWebChannel not available');
-                        return;
-                    }}
-                    
-                    try {{
-                        new QWebChannel(qt.webChannelTransport, function(channel) {{
-                            window.pyBridge = channel.objects.pyBridge;
-                            bridgeInitialized = true;
-                            console.log('JS (Grok): Bridge initialized, starting input search');
-                            
-                            // Start immediately, then retry if needed
-                            if (!findAndAttachToInput()) {{
-                                setTimeout(retryAttachment, 3000);
-                            }}
-                        }});
-                    }} catch (e) {{
-                        console.error('JS (Grok): QWebChannel error:', e);
-                    }}
-                }}
-                
-                // Start the process
-                if (window.pyBridge) {{
-                    console.log('JS (Grok): Bridge already available');
-                    bridgeInitialized = true;
-                    findAndAttachToInput();
-                }} else if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
-                    initWebChannelAndStart();
-                }} else {{
-                    console.log('JS (Grok): Waiting for qt.webChannelTransport...');
-                    var attempts = 0;
-                    function waitForQt() {{
-                        if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
-                            initWebChannelAndStart();
-                        }} else if (attempts < 10) {{
-                            attempts++;
-                            setTimeout(waitForQt, 1000);
-                        }} else {{
-                            console.error('JS (Grok): Failed to initialize - qt.webChannelTransport not found');
-                            // Enable computer vision as fallback
-                            if (window.pyBridge && window.pyBridge.onJSDetectionStatus) {{
-                                window.pyBridge.onJSDetectionStatus(false);
-                            }}
-                        }}
-                    }}
-                    waitForQt();
-                }}
-            }})();
-        """
-        self.page.runJavaScript(BasePane._qwebchannel_js_content)
-        self.page.runJavaScript(script)
+        logger.info("Initialized GrokPane with computer vision fallback capability.")
 
     def _on_js_detection_status(self, success: bool):
         """Handle JS detection status and enable/disable computer vision."""
@@ -301,6 +103,11 @@ class GrokPane(BasePane):
     def _check_input_with_cv(self):
         """Use computer vision to detect text changes in the input area."""
         if not self.cv_enabled:
+            return
+            
+        # Check if computer vision dependencies are available
+        if Image is None or pytesseract is None:
+            print("PY (GrokPane): Computer vision dependencies not available (PIL/pytesseract)")
             return
             
         try:
@@ -353,9 +160,100 @@ class GrokPane(BasePane):
         # Check if text is reasonable length for user input
         return 3 <= len(text) <= 500
 
+    def fix_grok_input_focus(self):
+        """Fix Grok input field focus and placeholder clearing issues."""
+        script = """
+            (function() {
+                console.log('JS (Grok): Attempting to fix input focus and placeholder issues...');
+                
+                // Find all possible input elements
+                var inputElements = [];
+                var selectors = [
+                    'textarea[placeholder*="What"]',
+                    'textarea[placeholder*="know"]',
+                    'div[contenteditable="true"]',
+                    'textarea',
+                    '[contenteditable="true"]'
+                ];
+                
+                selectors.forEach(function(selector) {
+                    var elements = document.querySelectorAll(selector);
+                    elements.forEach(function(el) {
+                        var rect = el.getBoundingClientRect();
+                        var isVisible = rect.width > 0 && rect.height > 0 && 
+                                       window.getComputedStyle(el).display !== 'none' &&
+                                       window.getComputedStyle(el).visibility !== 'hidden';
+                        if (isVisible) {
+                            inputElements.push(el);
+                        }
+                    });
+                });
+                
+                console.log('JS (Grok): Found', inputElements.length, 'visible input elements');
+                
+                inputElements.forEach(function(el, index) {
+                    console.log('JS (Grok): Input element', index, ':', el.tagName, el.placeholder || 'no placeholder');
+                    
+                    // Force focus and clear placeholder behavior
+                    try {
+                        // Focus the element
+                        el.focus();
+                        
+                        // Clear placeholder styling if it exists
+                        if (el.placeholder) {
+                            console.log('JS (Grok): Clearing placeholder for element', index);
+                            
+                            // Force placeholder to hide by simulating input
+                            var event = new Event('input', { bubbles: true });
+                            el.dispatchEvent(event);
+                            
+                            // Also try focus event
+                            var focusEvent = new Event('focus', { bubbles: true });
+                            el.dispatchEvent(focusEvent);
+                            
+                            // Set a temporary value to force placeholder to disappear
+                            if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+                                var originalValue = el.value;
+                                el.value = ' '; // Temporary space
+                                setTimeout(function() {
+                                    el.value = originalValue; // Restore original value
+                                }, 100);
+                            } else if (el.contentEditable === 'true') {
+                                var originalText = el.innerText;
+                                el.innerText = ' '; // Temporary space
+                                setTimeout(function() {
+                                    el.innerText = originalText; // Restore original text
+                                }, 100);
+                            }
+                        }
+                        
+                        // Force a style update
+                        el.style.opacity = '0.99';
+                        setTimeout(function() {
+                            el.style.opacity = '1';
+                        }, 50);
+                        
+                    } catch (e) {
+                        console.log('JS (Grok): Error fixing element', index, ':', e);
+                    }
+                });
+                
+                return inputElements.length;
+            })();
+        """
+        
+        try:
+            self.page.runJavaScript(script, lambda result: 
+                print(f"PY (GrokPane): Fixed {result} input elements"))
+        except Exception as e:
+            print(f"PY (GrokPane): Error running fix script: {e}")
+
     def setExternalText(self, text: str, selector: str = None):
-        """Override to use the working selector found during initialization."""
+        """Override to fix Grok input issues and use the working selector found during initialization."""
         import json
+        
+        # First, try to fix any focus/placeholder issues
+        self.fix_grok_input_focus()
         
         js_text_escaped = json.dumps(text)
         
@@ -365,57 +263,282 @@ class GrokPane(BasePane):
                 var workingSelector = window.grokWorkingSelector;
                 var inputElement = null;
                 
-                console.log(`JS (Grok setExternalText): Setting text: "{js_text_escaped}"`);
+                console.log('JS (Grok setExternalText): Setting text:', {js_text_escaped});
                 
                 // Try working selector first
                 if (workingSelector) {{
                     inputElement = document.querySelector(workingSelector);
                     if (inputElement) {{
-                        console.log(`JS (Grok setExternalText): Using working selector: ${{workingSelector}}`);
+                        console.log('JS (Grok setExternalText): Using working selector:', workingSelector);
                     }}
                 }}
                 
                 // If that failed, try all selectors
                 if (!inputElement) {{
                     for (let i = 0; i < selectors.length; i++) {{
-                        inputElement = document.querySelector(selectors[i]);
-                        if (inputElement) {{
-                            var rect = inputElement.getBoundingClientRect();
-                            var isVisible = rect.width > 0 && rect.height > 0;
+                        var elements = document.querySelectorAll(selectors[i]);
+                        for (let j = 0; j < elements.length; j++) {{
+                            var el = elements[j];
+                            var rect = el.getBoundingClientRect();
+                            var isVisible = rect.width > 0 && rect.height > 0 && 
+                                           window.getComputedStyle(el).display !== 'none' &&
+                                           window.getComputedStyle(el).visibility !== 'hidden';
                             if (isVisible) {{
-                                console.log(`JS (Grok setExternalText): Found with selector ${{i+1}}: ${{selectors[i]}}`);
+                                console.log('JS (Grok setExternalText): Found with selector', i+1, ':', selectors[i]);
+                                inputElement = el;
                                 window.grokWorkingSelector = selectors[i];
                                 break;
                             }}
                         }}
+                        if (inputElement) break;
                     }}
                 }}
                 
                 if (inputElement) {{
                     inputElement._isProgrammaticUpdate = true;
                     
-                    if (inputElement.tagName === 'TEXTAREA' || inputElement.tagName === 'INPUT') {{
+                    try {{
+                        // Force focus first
                         inputElement.focus();
-                        inputElement.value = {js_text_escaped};
-                        inputElement.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        inputElement.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }} else if (inputElement.contentEditable === 'true') {{
-                        inputElement.focus();
-                        inputElement.innerText = {js_text_escaped};
-                        inputElement.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        
+                        // Clear any existing content and placeholder
+                        if (inputElement.tagName === 'TEXTAREA' || inputElement.tagName === 'INPUT') {{
+                            inputElement.value = '';
+                            inputElement.placeholder = ''; // Clear placeholder temporarily
+                            
+                            // Set the new text
+                            inputElement.value = {js_text_escaped};
+                            
+                            // Trigger events to ensure the UI updates
+                            ['input', 'change', 'keyup'].forEach(function(eventType) {{
+                                var event = new Event(eventType, {{ bubbles: true }});
+                                inputElement.dispatchEvent(event);
+                            }});
+                            
+                        }} else if (inputElement.contentEditable === 'true') {{
+                            inputElement.innerText = '';
+                            inputElement.textContent = '';
+                            
+                            // Set the new text
+                            inputElement.innerText = {js_text_escaped};
+                            
+                            // Trigger events
+                            ['input', 'change'].forEach(function(eventType) {{
+                                var event = new Event(eventType, {{ bubbles: true }});
+                                inputElement.dispatchEvent(event);
+                            }});
+                        }}
+                        
+                        // Force a visual update
+                        inputElement.style.opacity = '0.99';
+                        setTimeout(function() {{
+                            inputElement.style.opacity = '1';
+                            inputElement._isProgrammaticUpdate = false;
+                        }}, 100);
+                        
+                        console.log('JS (Grok setExternalText): Text set successfully');
+                        return true;
+                        
+                    }} catch (e) {{
+                        console.log('JS (Grok setExternalText): Error setting text:', e);
+                        inputElement._isProgrammaticUpdate = false;
+                        return false;
                     }}
-                    
-                    setTimeout(() => {{
-                        delete inputElement._isProgrammaticUpdate;
-                    }}, 100);
-                    
-                    console.log(`JS (Grok setExternalText): Text set successfully`);
                 }} else {{
-                    console.warn(`JS (Grok setExternalText): No input element found - relying on computer vision`);
+                    console.log('JS (Grok setExternalText): No input element found');
+                    return false;
                 }}
             }})();
         """
-        if self.page:
-            self.page.runJavaScript(script)
+        
+        try:
+            self.page.runJavaScript(script, lambda result: 
+                print(f"PY (GrokPane): setExternalText result: {result}"))
+        except Exception as e:
+            print(f"PY (GrokPane): Error in setExternalText: {e}")
+
+    def sync_text_from_other_pane(self, text: str) -> bool:
+        """
+        Synchronize text from another pane to Grok using OCR-based approach.
+        This method finds the input box with OCR, clicks it, then sets text.
+        
+        Args:
+            text: Text to set in the input box
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info(f"Syncing text to Grok from other pane: '{text[:50]}...'")
+            
+            # First, try to find the input box with OCR
+            target_texts = [
+                "What can I help with?", "What do you want to know?", "what do you want to know", "Ask anything",
+                "Message", "Type a message", "help", "with", "ask", "know"
+            ]
+            
+            # Find input box location
+            input_location = self.ocr_finder.find_input_box(self, target_texts)
+            
+            if input_location:
+                x, y, w, h = input_location
+                logger.info(f"Found Grok input box at ({x}, {y}) size {w}x{h}")
+                
+                # Click the input box to focus it
+                from PySide6.QtCore import QPoint
+                from PySide6.QtGui import QMouseEvent
+                from PySide6.QtCore import Qt
+                
+                # Calculate click position (center of found area)
+                click_x = x + w // 2
+                click_y = y + h // 2
+                
+                # Create and send mouse click event
+                click_pos = QPoint(click_x, click_y)
+                
+                # Send mouse press and release events
+                press_event = QMouseEvent(
+                    QMouseEvent.Type.MouseButtonPress,
+                    click_pos,
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier
+                )
+                
+                release_event = QMouseEvent(
+                    QMouseEvent.Type.MouseButtonRelease,
+                    click_pos,
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier
+                )
+                
+                # Send the events to the web view
+                self.web_view.mousePressEvent(press_event)
+                self.web_view.mouseReleaseEvent(release_event)
+                
+                logger.info(f"Clicked Grok input box at ({click_x}, {click_y})")
+                
+                # Wait a moment for the click to register
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(200, lambda: self._set_text_after_click(text))
+                
+                return True
+            else:
+                logger.warning("Could not find Grok input box with OCR, falling back to JavaScript")
+                # Fall back to the original JavaScript method
+                self.setExternalText(text)
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error in sync_text_from_other_pane: {str(e)}", exc_info=True)
+            # Fall back to original method
+            self.setExternalText(text)
+            return False
+    
+    def _set_text_after_click(self, text: str):
+        """Set text after clicking the input box."""
+        try:
+            logger.info("Setting text after click")
+            
+            # Use a more aggressive text setting approach
+            import json
+            js_text_escaped = json.dumps(text)
+            
+            script = f"""
+                (function() {{
+                    console.log('JS (Grok): Setting text after click:', {js_text_escaped});
+                    
+                    // Find the currently focused element
+                    var focusedElement = document.activeElement;
+                    console.log('JS (Grok): Focused element:', focusedElement);
+                    
+                    if (focusedElement && (
+                        focusedElement.tagName === 'TEXTAREA' || 
+                        focusedElement.tagName === 'INPUT' ||
+                        focusedElement.contentEditable === 'true'
+                    )) {{
+                        console.log('JS (Grok): Using focused element');
+                        
+                        // Clear the element completely
+                        if (focusedElement.tagName === 'TEXTAREA' || focusedElement.tagName === 'INPUT') {{
+                            focusedElement.value = '';
+                            focusedElement.placeholder = '';
+                            
+                            // Set new text
+                            focusedElement.value = {js_text_escaped};
+                            
+                            // Trigger events
+                            ['focus', 'input', 'change', 'keyup'].forEach(function(eventType) {{
+                                var event = new Event(eventType, {{ bubbles: true }});
+                                focusedElement.dispatchEvent(event);
+                            }});
+                            
+                        }} else if (focusedElement.contentEditable === 'true') {{
+                            focusedElement.innerHTML = '';
+                            focusedElement.innerText = '';
+                            focusedElement.textContent = '';
+                            
+                            // Set new text
+                            focusedElement.innerText = {js_text_escaped};
+                            
+                            // Trigger events
+                            ['focus', 'input', 'change'].forEach(function(eventType) {{
+                                var event = new Event(eventType, {{ bubbles: true }});
+                                focusedElement.dispatchEvent(event);
+                            }});
+                        }}
+                        
+                        console.log('JS (Grok): Text set successfully on focused element');
+                        return true;
+                    }} else {{
+                        console.log('JS (Grok): No suitable focused element, trying selectors');
+                        
+                        // Fall back to selector-based approach
+                        var selectors = {str(self.__class__.JS_INPUT_SELECTORS)};
+                        
+                        for (let i = 0; i < selectors.length; i++) {{
+                            var elements = document.querySelectorAll(selectors[i]);
+                            for (let j = 0; j < elements.length; j++) {{
+                                var el = elements[j];
+                                var rect = el.getBoundingClientRect();
+                                var isVisible = rect.width > 0 && rect.height > 0;
+                                
+                                if (isVisible) {{
+                                    console.log('JS (Grok): Found visible element with selector:', selectors[i]);
+                                    
+                                    // Focus and clear
+                                    el.focus();
+                                    
+                                    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {{
+                                        el.value = '';
+                                        el.value = {js_text_escaped};
+                                    }} else if (el.contentEditable === 'true') {{
+                                        el.innerText = '';
+                                        el.innerText = {js_text_escaped};
+                                    }}
+                                    
+                                    // Trigger events
+                                    ['focus', 'input', 'change'].forEach(function(eventType) {{
+                                        var event = new Event(eventType, {{ bubbles: true }});
+                                        el.dispatchEvent(event);
+                                    }});
+                                    
+                                    return true;
+                                }}
+                            }}
+                        }}
+                        
+                        console.log('JS (Grok): No suitable element found');
+                        return false;
+                    }}
+                }})();
+            """
+            
+            self.page.runJavaScript(script, lambda result: 
+                logger.info(f"Text setting after click result: {result}"))
+                
+        except Exception as e:
+            logger.error(f"Error setting text after click: {str(e)}", exc_info=True)
 
 print(f"GROK.PY MODULE LOADED. GrokPane.JS_INPUT = '{GrokPane.JS_INPUT}'")

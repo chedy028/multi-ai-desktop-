@@ -1,88 +1,161 @@
-# Multi-AI Desktop
+# Multi-AI Desktop Chat
 
-A desktop application that allows you to interact with multiple AI models (ChatGPT, Gemini, and Grok) in a unified interface, featuring real-time input mirroring between panes.
+A powerful Qt-based desktop application that allows you to interact with multiple AI models (ChatGPT, Claude, Gemini, and Grok) simultaneously. Access it locally or via web through Docker with VNC.
 
-## Features
+## 🚀 Features
 
-- Multiple AI model support (ChatGPT, Gemini, Grok)
-- Real-time input mirroring between active panes
-- Modern Qt-based user interface
-- Tabbed interface for managing multiple conversations (Note: Current implementation uses a QSplitter, not tabs)
-- Direct login support for each service within its web view
-- Resource management and conversation history (Placeholder for future development)
+- **Multiple AI Models**: ChatGPT, Claude, Gemini, and Grok in one interface
+- **Real-time Input Mirroring**: Type in one pane, see it reflected in others
+- **OCR Capabilities**: Extract text from images and screenshots
+- **Modern Qt Interface**: Beautiful, responsive desktop application
+- **Web Access**: Run in Docker and access via web browser through VNC
+- **Direct Login Support**: Login to each AI service within the app
 
-## Tech Stack
+## 🖥️ Local Installation
 
-- Python 3.x
-- PySide6 (Qt for Python)
-- QWebEngineView (for embedding web content and interacting via JavaScript)
+### Prerequisites
+- Python 3.8+
+- Qt6 libraries (for local running)
 
-## Installation
+### Install and Run Locally
 
-1. Clone the repository:
+1. **Clone the repository:**
 ```bash
-git clone https://github.com/chedy028/multi-ai-desktop-.git
-cd multi-ai-desktop-
+git clone <your-repo-url>
+cd multi-ai-desktop
 ```
 
-2. Create and activate a virtual environment:
+2. **Create virtual environment:**
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-3. Install the package (or dependencies from pyproject.toml if not a full package yet):
+3. **Install dependencies:**
 ```bash
-# If pyproject.toml and a build system like Poetry/Flit is used:
-# pip install .
-# Or, install main dependencies directly (example):
-pip install pyside6 python-dotenv
-# For OCR features (if used, ensure Tesseract OCR is installed on your system):
-# pip install pytesseract Pillow opencv-python pyautogui 
+pip install -r requirements.txt
 ```
 
-## Development Setup
-
-1. Install development dependencies (if applicable, e.g., for linters, testers):
-```bash
-# pip install -e ".[dev]" # If defined in pyproject.toml
-# pip install pytest flake8 black # Example dev tools
-```
-
-2. Run tests (if applicable):
-```bash
-# pytest
-```
-
-## Usage
-
-Run the application from the project root directory:
+4. **Run the application:**
 ```bash
 python -m app
 ```
 
-## Showcase
+## 🐳 Docker Deployment (Web Access)
 
-Check out a video of the Multi-AI Desktop in action:
-![Multi-AI Desktop Showcase](showcase.gif)
+The best way to make the desktop app accessible via web browser:
 
-## Configuration
+### Quick Start
 
-Currently, user login for each AI service (ChatGPT, Gemini, Grok) is handled manually within their respective web views after the application starts.
-
-(Optional) For future development involving direct API interactions or automated logins, a `.env` file in the project root can be used for credentials. Ensure `.env` is listed in your `.gitignore` file.
-Example `.env` structure:
-```
-CHATGPT_API_KEY=your_chatgpt_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
-# etc.
+1. **Build and run with Docker:**
+```bash
+docker compose build
+docker compose up
 ```
 
-## Known Issues & Limitations
+2. **Access via web browser:**
+   - Open: http://localhost:6080
+   - Click "Connect"
+   - Password: `multi-ai`
 
-- **Grok Pane UI with Mirrored Text:** When text is mirrored *to* the Grok pane from other panes (e.g., ChatGPT, Gemini), Grok's web UI may not fully update. This can result in the mirrored text overlapping with Grok's placeholder text, and the send button in Grok might not activate for this programmatically inserted text. Typing directly into the Grok pane works as expected and correctly mirrors to other panes.
-- **Initial Pane Loading:** Panes load web content which might take a few moments depending on network speed and service availability. Ensure you have a stable internet connection.
+### Background Mode
+```bash
+docker compose up -d  # Run in background
+docker compose logs   # View logs
+docker compose down   # Stop containers
+```
 
-## License
+## 🌐 Remote Access Setup
 
-MIT License 
+For production deployment on a VM/VPS:
+
+1. **Deploy on your server:**
+```bash
+git clone <your-repo-url>
+cd multi-ai-desktop
+docker compose up -d
+```
+
+2. **Configure firewall:**
+```bash
+# Allow port 6080 for web access
+sudo ufw allow 6080
+```
+
+3. **Access remotely:**
+   - Open: http://your-server-ip:6080
+   - Password: `multi-ai`
+
+## 🔧 Configuration
+
+### Security (Production)
+Change the VNC password in `Dockerfile`:
+```dockerfile
+RUN mkdir -p ~/.vnc && x11vnc -storepasswd YOUR_PASSWORD ~/.vnc/passwd
+```
+
+### Display Settings
+Modify display resolution in `docker/supervisord.conf`:
+```ini
+command=Xvfb :0 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset
+```
+
+## 📱 Usage
+
+1. **Access the application** (locally or via web)
+2. **Login to AI services** - Each pane will load the respective AI service
+3. **Type in any pane** - Your input will be mirrored to all other panes
+4. **Use OCR features** - Extract text from images when running locally
+
+## 🛠️ Tech Stack
+
+- **Frontend**: PySide6 (Qt for Python)
+- **Web Embedding**: QWebEngineView
+- **OCR**: Tesseract + OpenCV
+- **Containerization**: Docker + Docker Compose
+- **Remote Access**: VNC + noVNC
+
+## 📊 Architecture
+
+```
+User Browser → noVNC (Port 6080) → VNC → X11/Qt Desktop App
+```
+
+## 🔍 Troubleshooting
+
+### Container Issues
+```bash
+# View detailed logs
+docker compose logs multi-ai-desktop
+
+# Restart container
+docker compose restart
+
+# Rebuild if needed
+docker compose build --no-cache
+```
+
+### Local Qt Issues
+```bash
+# Install Qt6 dependencies (Ubuntu/Debian)
+sudo apt-get install qt6-base-dev libqt6webenginewidgets6
+
+# Set environment variables
+export QT_QPA_PLATFORM=xcb
+export DISPLAY=:0
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Test locally and in Docker
+4. Submit a pull request
+
+## 📄 License
+
+MIT License
+
+---
+
+**Access your Multi-AI Desktop anywhere through the web! 🚀** 

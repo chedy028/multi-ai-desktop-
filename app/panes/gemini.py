@@ -9,5 +9,5 @@ class GeminiPane(BasePane):
     JS_LAST_REPLY = "div.model-response-text"
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         # Note: User must manually log in to Google within the pane 

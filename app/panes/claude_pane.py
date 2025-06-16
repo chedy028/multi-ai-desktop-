@@ -42,7 +42,7 @@ class ClaudePane(BasePane):
     JS_LAST_REPLY = "div[data-testid*='message'] .prose, div.message-content, .assistant-message, div[data-testid*='claude'] div"
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent=parent)
         # Note: User must manually log in to Claude within the pane
 
     def _inject_input_listener_js(self, ok):

@@ -1,15 +1,16 @@
 import sys
+import os
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QSplitter, 
                                QTextEdit, QPushButton, QMainWindow, QHBoxLayout, 
-                               QMessageBox, QDockWidget, QTabWidget)
+                               QMessageBox)
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtWebEngineCore import QWebEngineSettings
 from app.panes.base_pane import BasePane
 from app.panes.chatgpt import ChatGPTPane
 from app.panes.gemini import GeminiPane
 from app.panes.grok import GrokPane
 from app.panes.claude_pane import ClaudePane
-from app.widgets.ocr_control import OCRControlWidget
 from app.utils.logging_config import setup_logging, get_logger
 from app.utils.error_recovery import ErrorRecoveryManager
 
@@ -38,7 +39,7 @@ class MainWindow(QMainWindow):
         logger.info("Initializing Multi-AI Desktop application")
         
         self.setWindowTitle("Multi-AI Chat - ChatGPT | Grok | Gemini | Claude")
-        self.setGeometry(100, 100, 1800, 800)  # Increased width for OCR panel
+        self.setGeometry(100, 100, 1600, 800)  # Adjusted width since no OCR panel
 
         # Initialize error recovery manager
         self.error_recovery = ErrorRecoveryManager(self)
@@ -50,9 +51,12 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins for maximum space
+        main_layout.setSpacing(0)  # Remove spacing between panes
 
         # Create main splitter for AI panes
         self.ai_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.ai_splitter.setHandleWidth(1)  # Minimal splitter handle width
         
         # Create panes with error handling
         try:
@@ -76,17 +80,8 @@ class MainWindow(QMainWindow):
         # Set initial sizes (4 equal panes)
         self.ai_splitter.setSizes([400, 400, 400, 400])
 
-        # Create OCR control panel
-        self.setup_ocr_panel()
-
-        # Create main horizontal splitter
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.addWidget(self.ai_splitter)
-        main_splitter.addWidget(self.ocr_dock_widget)
-        
-        # Set sizes: 80% for AI panes, 20% for OCR panel
-        main_splitter.setSizes([1440, 360])
-        main_layout.addWidget(main_splitter)
+        # Add the AI splitter directly to main layout (no OCR panel)
+        main_layout.addWidget(self.ai_splitter)
 
         # Connect signals with error handling
         try:
@@ -97,100 +92,9 @@ class MainWindow(QMainWindow):
             logger.info("All pane signals connected successfully")
         except Exception as e:
             logger.error(f"Error connecting pane signals: {str(e)}", exc_info=True)
-
-        # Set initial OCR target to first pane
-        self.current_pane = self.chatgpt_pane
-        self.ocr_control.set_target_widget(self.current_pane)
-
-    def setup_ocr_panel(self):
-        """Set up the OCR control panel."""
-        try:
-            # Create OCR control widget
-            self.ocr_control = OCRControlWidget()
-            
-            # Create a dock widget for the OCR controls
-            self.ocr_dock_widget = QWidget()
-            ocr_layout = QVBoxLayout(self.ocr_dock_widget)
-            
-            # Add pane selection buttons
-            pane_selection_widget = QWidget()
-            pane_layout = QVBoxLayout(pane_selection_widget)
-            
-            # Title for pane selection
-            from PySide6.QtWidgets import QLabel
-            from PySide6.QtGui import QFont
-            pane_title = QLabel("Select Target Pane")
-            pane_title_font = QFont()
-            pane_title_font.setBold(True)
-            pane_title.setFont(pane_title_font)
-            pane_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            pane_layout.addWidget(pane_title)
-            
-            # Pane selection buttons
-            self.chatgpt_button = QPushButton("ChatGPT")
-            self.chatgpt_button.setCheckable(True)
-            self.chatgpt_button.setChecked(True)  # Default selection
-            self.chatgpt_button.clicked.connect(lambda: self.select_pane(self.chatgpt_pane, self.chatgpt_button))
-            pane_layout.addWidget(self.chatgpt_button)
-            
-            self.grok_button = QPushButton("Grok")
-            self.grok_button.setCheckable(True)
-            self.grok_button.clicked.connect(lambda: self.select_pane(self.grok_pane, self.grok_button))
-            pane_layout.addWidget(self.grok_button)
-            
-            self.gemini_button = QPushButton("Gemini")
-            self.gemini_button.setCheckable(True)
-            self.gemini_button.clicked.connect(lambda: self.select_pane(self.gemini_pane, self.gemini_button))
-            pane_layout.addWidget(self.gemini_button)
-            
-            self.claude_button = QPushButton("Claude")
-            self.claude_button.setCheckable(True)
-            self.claude_button.clicked.connect(lambda: self.select_pane(self.claude_pane, self.claude_button))
-            pane_layout.addWidget(self.claude_button)
-            
-            # Store buttons for easy access
-            self.pane_buttons = [self.chatgpt_button, self.grok_button, self.gemini_button, self.claude_button]
-            
-            ocr_layout.addWidget(pane_selection_widget)
-            
-            # Add separator
-            from PySide6.QtWidgets import QFrame
-            separator = QFrame()
-            separator.setFrameShape(QFrame.Shape.HLine)
-            separator.setFrameShadow(QFrame.Shadow.Sunken)
-            ocr_layout.addWidget(separator)
-            
-            # Add OCR control widget
-            ocr_layout.addWidget(self.ocr_control)
-            
-            # Add stretch to push everything to top
-            ocr_layout.addStretch()
-            
-            logger.info("OCR control panel created successfully")
-            
-        except Exception as e:
-            logger.error(f"Error creating OCR panel: {str(e)}", exc_info=True)
-            # Create a simple fallback widget
-            self.ocr_dock_widget = QWidget()
-            fallback_layout = QVBoxLayout(self.ocr_dock_widget)
-            fallback_layout.addWidget(QLabel(f"OCR Panel Error: {str(e)}"))
-
-    def select_pane(self, pane, button):
-        """Select a pane as the OCR target."""
-        try:
-            # Update button states
-            for btn in self.pane_buttons:
-                btn.setChecked(False)
-            button.setChecked(True)
-            
-            # Set the target pane
-            self.current_pane = pane
-            self.ocr_control.set_target_widget(pane)
-            
-            logger.info(f"OCR target set to: {pane.__class__.__name__}")
-            
-        except Exception as e:
-            logger.error(f"Error selecting pane: {str(e)}", exc_info=True)
+        
+        # Test bridge connections after a delay to ensure everything is initialized
+        QTimer.singleShot(3000, self._test_all_bridges)  # Test after 3 seconds
 
     def _connect_pane_signals(self, pane):
         """Connect all signals for a pane."""
@@ -199,6 +103,11 @@ class MainWindow(QMainWindow):
             pane.errorOccurred.connect(self.on_error_occurred)
             pane.answerReady.connect(self.on_answer_received)
             pane.userInputDetectedInPane.connect(self.on_pane_user_input)
+            
+            # Also connect the new inputDetected signal if it exists
+            if hasattr(pane, 'inputDetected'):
+                pane.inputDetected.connect(self.on_input_detected)
+            
             logger.debug(f"Connected signals for {pane.__class__.__name__}")
         except Exception as e:
             logger.error(f"Error connecting signals for {pane.__class__.__name__}: {str(e)}")
@@ -240,14 +149,36 @@ class MainWindow(QMainWindow):
 
     def on_pane_user_input(self, text, originating_pane):
         """Handle user input from any pane and distribute to others."""
-        logger.debug(f"User input detected in {originating_pane.__class__.__name__}: {len(text)} characters")
+        logger.info(f"🔥 USER INPUT DETECTED! Pane: {originating_pane.__class__.__name__}, Text: '{text}' ({len(text)} chars)")
         
         try:
+            distributed_to = []
             for pane in [self.chatgpt_pane, self.gemini_pane, self.grok_pane, self.claude_pane]:
                 if pane is not originating_pane:  # Don't update the pane that sourced the text
-                    pane.setExternalText(text)
+                    # Use the new sync_input_to_pane method for better compatibility
+                    pane.sync_input_to_pane(text)
+                    distributed_to.append(pane.__class__.__name__)
+            
+            logger.info(f"✅ Text distributed to: {', '.join(distributed_to)}")
         except Exception as e:
-            logger.error(f"Error distributing user input: {str(e)}", exc_info=True)
+            logger.error(f"❌ Error distributing user input: {str(e)}", exc_info=True)
+
+    def on_input_detected(self, pane_name, text):
+        """Handle input detected from polling system."""
+        logger.info(f"🔥 INPUT DETECTED VIA POLLING! Pane: {pane_name}, Text: '{text}' ({len(text)} chars)")
+        
+        # Find the originating pane
+        originating_pane = None
+        for pane in [self.chatgpt_pane, self.gemini_pane, self.grok_pane, self.claude_pane]:
+            if pane.__class__.__name__ == pane_name:
+                originating_pane = pane
+                break
+        
+        if originating_pane:
+            # Use the same distribution logic
+            self.on_pane_user_input(text, originating_pane)
+        else:
+            logger.error(f"Could not find originating pane for {pane_name}")
 
     def _handle_network_error(self, url: str, error_message: str):
         """Handle network error signals from error recovery manager."""
@@ -263,6 +194,17 @@ class MainWindow(QMainWindow):
             logger.info(f"Recovery successful for: {operation}")
         else:
             logger.warning(f"Recovery failed for: {operation}")
+
+    def _test_all_bridges(self):
+        """Test all bridge connections."""
+        logger.info("Testing all bridge connections...")
+        try:
+            self.chatgpt_pane.test_bridge_connection()
+            self.grok_pane.test_bridge_connection() 
+            self.gemini_pane.test_bridge_connection()
+            self.claude_pane.test_bridge_connection()
+        except Exception as e:
+            logger.error(f"Error testing bridges: {str(e)}", exc_info=True)
 
     def closeEvent(self, event):
         """Handle application close event."""
@@ -282,8 +224,24 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     try:
+        # Set Chrome flags for running as root in Docker
+        # Note: Removed --disable-gpu to allow WebGL for Grok compatibility
+        os.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', 
+                              '--no-sandbox --disable-dev-shm-usage')
+        
         app = QApplication(sys.argv)
         logger.info("QApplication created")
+        
+        # Additional WebEngine settings for Docker
+        try:
+            from PySide6.QtWebEngineCore import QWebEngineSettings
+            QWebEngineSettings.globalSettings().setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+            QWebEngineSettings.globalSettings().setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+            logger.info("WebEngine settings configured for Docker")
+        except Exception as e:
+            logger.warning(f"Could not configure WebEngine settings: {str(e)}")
         
         win = MainWindow()
         win.show()
