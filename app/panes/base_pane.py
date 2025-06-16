@@ -201,22 +201,25 @@ class BasePane(QWidget):
             self.show_error("Page load failed")
             return
 
-        if BasePane._qwebchannel_js_content is None:
-            logger.error(f"qwebchannel.js content is not loaded. Cannot inject JS for {self.__class__.__name__}")
-            raise JSBridgeError("qwebchannel.js content not available")
-
-        js_input_selector = getattr(self.__class__, 'JS_INPUT', None)
-        if not js_input_selector:
-            logger.debug(f"No JS_INPUT selector defined for {self.__class__.__name__}. Skipping input listener injection.")
-            return
-
-        logger.debug(f"Injecting input listener JS for {self.__class__.__name__} with selector: {js_input_selector}")
-
+        # The JavaScript bridge is optional - polling works without it
+        # Try to inject the bridge, but don't fail if qwebchannel.js is not available
         try:
+            if BasePane._qwebchannel_js_content is None:
+                logger.warning(f"qwebchannel.js content is not loaded for {self.__class__.__name__}. Bridge injection skipped, but polling will still work.")
+                return
+
+            js_input_selector = getattr(self.__class__, 'JS_INPUT', None)
+            if not js_input_selector:
+                logger.debug(f"No JS_INPUT selector defined for {self.__class__.__name__}. Skipping input listener injection.")
+                return
+
+            logger.debug(f"Injecting input listener JS for {self.__class__.__name__} with selector: {js_input_selector}")
+
             # Use the new JavaScript loader
             script = js_loader.get_input_listener_js(self.__class__.__name__, js_input_selector)
             if not script:
-                raise JSBridgeError("Failed to load input listener JavaScript")
+                logger.warning(f"Failed to load input listener JavaScript for {self.__class__.__name__}. Polling will still work.")
+                return
             
             # Inject qwebchannel.js first, then our script
             self.page.runJavaScript(BasePane._qwebchannel_js_content)
@@ -224,8 +227,8 @@ class BasePane(QWidget):
             
             logger.info(f"Successfully injected input listener JS for {self.__class__.__name__}")
         except Exception as e:
-            logger.error(f"Error injecting JavaScript for {self.__class__.__name__}: {str(e)}", exc_info=True)
-            raise JSBridgeError(f"JavaScript injection failed: {str(e)}")
+            logger.warning(f"JavaScript bridge injection failed for {self.__class__.__name__}: {str(e)}. Polling will still work.")
+            # Don't raise an exception - polling will handle synchronization
 
     @retry_on_failure(max_retries=2, delay=0.5, exceptions=(Exception,))
     def setExternalText(self, text: str, selector: str = None):
@@ -275,7 +278,8 @@ class BasePane(QWidget):
         if self._current_url and self._is_significant_url_change(self._current_url, url_str):
             logger.info(f"Significant URL change detected in {self.__class__.__name__}: {self._current_url} -> {url_str}")
             # Schedule delayed JS injection to allow page to fully load
-            self._js_injection_timer.start(2000)  # 2 second delay
+            # Use a shorter delay for better responsiveness
+            self._js_injection_timer.start(1500)  # 1.5 second delay
         
         self._current_url = url_str
 
@@ -301,6 +305,11 @@ class BasePane(QWidget):
             path_changed = old_parsed.path != new_parsed.path
             query_changed = old_parsed.query != new_parsed.query
             
+            # For ChatGPT, also consider fragment changes significant as they often indicate new chats
+            if "chatgpt" in new_url.lower() or "openai" in new_url.lower():
+                fragment_changed = old_parsed.fragment != new_parsed.fragment
+                return path_changed or query_changed or fragment_changed
+            
             return path_changed or query_changed
         except Exception as e:
             logger.error(f"Error comparing URLs in {self.__class__.__name__}: {str(e)}")
@@ -312,9 +321,16 @@ class BasePane(QWidget):
         logger.info(f"Performing delayed JS injection for {self.__class__.__name__} after URL change")
         try:
             # Inject JS as if the page just finished loading
+            # This is optional - if it fails, polling will still work
             self._inject_input_listener_js(True)
         except Exception as e:
-            logger.error(f"Error in delayed JS injection for {self.__class__.__name__}: {str(e)}", exc_info=True)
+            logger.warning(f"Delayed JS injection failed for {self.__class__.__name__}: {str(e)}. Polling will continue to work.")
+            # Don't propagate the exception - the app should continue working
+        
+        # Ensure polling is still active after page change
+        if not self._input_poll_timer.isActive():
+            logger.info(f"Restarting input polling for {self.__class__.__name__} after page change")
+            self._input_poll_timer.start(1000)
 
     def __del__(self):
         """Clean up resources when the pane is destroyed."""
@@ -817,7 +833,10 @@ class BasePane(QWidget):
                 'textarea[data-testid="textbox"]',
                 'textarea[placeholder*="Message"]',
                 '[data-testid="gizmo-composer-input"]',
-                // Grok selectors (enhanced)
+                // Grok selectors (enhanced for actual chat interface)
+                'textarea[placeholder*="Ask Grok"]',
+                'textarea[placeholder*="Message Grok"]',
+                'textarea[data-testid="grok-input"]',
                 'div[data-testid="chat-input"]',
                 'div[data-testid="composer-input"]',
                 'div[contenteditable="true"][data-testid*="input"]',
@@ -825,6 +844,10 @@ class BasePane(QWidget):
                 'textarea[placeholder*="What"]',
                 'div[contenteditable="true"][placeholder*="Ask"]',
                 'div[contenteditable="true"][placeholder*="What"]',
+                // Additional Grok chat interface selectors
+                'textarea[class*="composer"]',
+                'textarea[class*="input"]',
+                'div[contenteditable="true"][role="textbox"]',
                 // Gemini selectors
                 'div.input-area rich-textarea > div[contenteditable="true"]',
                 'rich-textarea div[contenteditable="true"]',
@@ -844,6 +867,18 @@ class BasePane(QWidget):
             ];
             
             var currentText = "";
+            var foundElement = null;
+            
+            // Add debugging for Grok specifically
+            var isGrok = window.location.href.includes('grok.com') || window.location.href.includes('x.ai');
+            if (isGrok) {
+                console.log('GROK DEBUG: Current URL:', window.location.href);
+                console.log('GROK DEBUG: All textareas:', document.querySelectorAll('textarea'));
+                console.log('GROK DEBUG: All contenteditable divs:', document.querySelectorAll('div[contenteditable="true"]'));
+                console.log('GROK DEBUG: All inputs:', document.querySelectorAll('input'));
+                console.log('GROK DEBUG: Elements with placeholder containing "Ask":', document.querySelectorAll('[placeholder*="Ask"]'));
+                console.log('GROK DEBUG: Elements with data-testid:', document.querySelectorAll('[data-testid]'));
+            }
             
             for (var i = 0; i < inputSelectors.length; i++) {
                 var elements = document.querySelectorAll(inputSelectors[i]);
@@ -852,10 +887,32 @@ class BasePane(QWidget):
                     var text = element.value || element.textContent || element.innerText || "";
                     if (text.trim().length > 0) {
                         currentText = text.trim();
+                        foundElement = element;
+                        if (isGrok) {
+                            console.log('GROK DEBUG: Found text in element:', inputSelectors[i], 'text:', text);
+                        }
                         break;
                     }
                 }
                 if (currentText) break;
+            }
+            
+            // If no text found but we're on Grok, let's try to find any visible input element
+            if (!currentText && isGrok) {
+                var allInputs = document.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]');
+                for (var k = 0; k < allInputs.length; k++) {
+                    var input = allInputs[k];
+                    var rect = input.getBoundingClientRect();
+                    var isVisible = rect.width > 0 && rect.height > 0 && input.offsetParent !== null;
+                    if (isVisible) {
+                        var text = input.value || input.textContent || input.innerText || "";
+                        if (text.trim().length > 0) {
+                            currentText = text.trim();
+                            console.log('GROK DEBUG: Found text in visible element:', input.tagName, input.className, input.placeholder, 'text:', text);
+                            break;
+                        }
+                    }
+                }
             }
             
             return currentText;
@@ -891,7 +948,7 @@ class BasePane(QWidget):
                 self._last_input_text = current_text
                 logger.info(f"🗑️ Text cleared via polling in {self.name}")
                 self.userInputDetectedInPane.emit("", self)
-    
+
     def sync_input_to_pane(self, text: str):
         """Sync input text to this pane's input field using site-specific selectors"""
         if not hasattr(self, 'web_view') or not self.web_view:
@@ -998,7 +1055,10 @@ class BasePane(QWidget):
             (function() {{
                 var text = {repr(text)};
                 var selectors = [
-                    // Modern Grok selectors (based on current X.ai interface)
+                    // Enhanced Grok selectors for actual chat interface
+                    'textarea[placeholder*="Ask Grok"]',
+                    'textarea[placeholder*="Message Grok"]',
+                    'textarea[data-testid="grok-input"]',
                     'div[data-testid="chat-input"]',
                     'div[data-testid="composer-input"]',
                     'div[contenteditable="true"][data-testid*="input"]',
@@ -1008,6 +1068,10 @@ class BasePane(QWidget):
                     'textarea[placeholder*="Message"]',
                     'div[contenteditable="true"][placeholder*="Ask"]',
                     'div[contenteditable="true"][placeholder*="What"]',
+                    // Class-based selectors for chat interface
+                    'textarea[class*="composer"]',
+                    'textarea[class*="input"]',
+                    'textarea[class*="chat"]',
                     // Generic fallbacks
                     'div[contenteditable="true"]',
                     'textarea',
@@ -1016,6 +1080,15 @@ class BasePane(QWidget):
                 
                 console.log('Grok: Trying to set text:', text);
                 console.log('Grok: Current URL:', window.location.href);
+                
+                // Enhanced debugging - show all possible input elements first
+                console.log('Grok: DEBUG - All textareas:', document.querySelectorAll('textarea'));
+                console.log('Grok: DEBUG - All contenteditable:', document.querySelectorAll('[contenteditable="true"]'));
+                console.log('Grok: DEBUG - All inputs:', document.querySelectorAll('input'));
+                console.log('Grok: DEBUG - All with data-testid:', document.querySelectorAll('[data-testid]'));
+                console.log('Grok: DEBUG - All with placeholder:', document.querySelectorAll('[placeholder]'));
+                
+                var foundElement = null;
                 
                 for (var i = 0; i < selectors.length; i++) {{
                     var selector = selectors[i];
@@ -1027,59 +1100,81 @@ class BasePane(QWidget):
                                        window.getComputedStyle(element).display !== 'none' &&
                                        window.getComputedStyle(element).visibility !== 'hidden';
                         console.log('Grok: Element visible:', isVisible);
-                        console.log('Grok: Element details:', element.tagName, element.placeholder, element.getAttribute('data-testid'));
+                        console.log('Grok: Element details:', element.tagName, element.className, element.placeholder, element.getAttribute('data-testid'));
                         
                         if (isVisible) {{
-                            // Focus first
-                            element.focus();
-                            
-                                                         // Clear and set text
-                             if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {{
-                                 element.value = text;
-                                 console.log('Grok: Set textarea/input value:', element.value);
-                             }} else {{
-                                 element.innerHTML = '';
-                                 element.textContent = text;
-                                 console.log('Grok: Set contenteditable text:', element.textContent);
-                             }}
-                            
-                            // Trigger comprehensive events
-                            element.dispatchEvent(new Event('focus', {{ bubbles: true }}));
-                            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            element.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: 'a' }}));
-                            element.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: 'a' }}));
-                            element.dispatchEvent(new Event('blur', {{ bubbles: true }}));
-                            element.dispatchEvent(new Event('focusout', {{ bubbles: true }}));
-                            
-                            console.log('Grok: Successfully set text to', selector);
-                            return true;
+                            foundElement = element;
+                            break;
                         }}
                     }}
                 }}
                 
-                // Enhanced debugging - log all possible input elements
-                console.log('Grok: DEBUG - All textareas:', document.querySelectorAll('textarea'));
-                console.log('Grok: DEBUG - All contenteditable:', document.querySelectorAll('[contenteditable="true"]'));
-                console.log('Grok: DEBUG - All inputs:', document.querySelectorAll('input'));
-                console.log('Grok: DEBUG - All with data-testid:', document.querySelectorAll('[data-testid*="input"], [data-testid*="chat"], [data-testid*="composer"]'));
-                console.log('Grok: DEBUG - All with role=textbox:', document.querySelectorAll('[role="textbox"]'));
-                
-                // Try to find any input-like element in the bottom part of the page
-                var allElements = document.querySelectorAll('*');
-                var bottomElements = [];
-                for (var i = 0; i < allElements.length; i++) {{
-                    var el = allElements[i];
-                    var rect = el.getBoundingClientRect();
-                    if (rect.bottom > window.innerHeight * 0.7) {{ // Bottom 30% of page
-                        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.contentEditable === 'true') {{
-                            bottomElements.push(el);
+                // If no element found with selectors, try to find any visible input in bottom half of page
+                if (!foundElement) {{
+                    console.log('Grok: No element found with selectors, searching for visible inputs...');
+                    var allInputs = document.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]');
+                    for (var j = 0; j < allInputs.length; j++) {{
+                        var input = allInputs[j];
+                        var rect = input.getBoundingClientRect();
+                        var isVisible = rect.width > 0 && rect.height > 0 && input.offsetParent !== null &&
+                                       rect.bottom > window.innerHeight * 0.3; // Bottom 70% of page
+                        if (isVisible) {{
+                            console.log('Grok: Found visible input:', input.tagName, input.className, input.placeholder);
+                            foundElement = input;
+                            break;
                         }}
                     }}
                 }}
-                console.log('Grok: DEBUG - Input elements in bottom 30% of page:', bottomElements);
                 
-                return false;
+                if (foundElement) {{
+                    console.log('Grok: Using element:', foundElement.tagName, foundElement.className, foundElement.placeholder);
+                    
+                    // Focus first
+                    foundElement.focus();
+                    
+                    // Clear and set text
+                    if (foundElement.tagName === 'TEXTAREA' || foundElement.tagName === 'INPUT') {{
+                        foundElement.value = text;
+                        console.log('Grok: Set textarea/input value:', foundElement.value);
+                    }} else {{
+                        foundElement.innerHTML = '';
+                        foundElement.textContent = text;
+                        console.log('Grok: Set contenteditable text:', foundElement.textContent);
+                    }}
+                    
+                    // Trigger comprehensive events
+                    foundElement.dispatchEvent(new Event('focus', {{ bubbles: true }}));
+                    foundElement.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    foundElement.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    foundElement.dispatchEvent(new KeyboardEvent('keydown', {{ bubbles: true, key: 'a' }}));
+                    foundElement.dispatchEvent(new KeyboardEvent('keyup', {{ bubbles: true, key: 'a' }}));
+                    foundElement.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+                    foundElement.dispatchEvent(new Event('focusout', {{ bubbles: true }}));
+                    
+                    console.log('Grok: Successfully set text');
+                    return true;
+                }} else {{
+                    console.log('Grok: No suitable input element found');
+                    // Log all elements that might be inputs for debugging
+                    var allElements = document.querySelectorAll('*');
+                    var potentialInputs = [];
+                    for (var k = 0; k < allElements.length; k++) {{
+                        var el = allElements[k];
+                        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || 
+                            el.contentEditable === 'true' || el.getAttribute('role') === 'textbox') {{
+                            potentialInputs.push({{
+                                tag: el.tagName,
+                                className: el.className,
+                                placeholder: el.placeholder,
+                                id: el.id,
+                                dataTestId: el.getAttribute('data-testid'),
+                                visible: el.offsetParent !== null
+                            }});
+                        }}
+                    }}
+                    console.log('Grok: All potential input elements:', potentialInputs);
+                    return false;
+                }}
             }})();
             """
         elif site_name == "ClaudePane":
