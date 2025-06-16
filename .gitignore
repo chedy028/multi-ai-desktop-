@@ -20,6 +20,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# Build directories
+dist/
+build/
+
 # Other
 *.log
 debug_capture.png
